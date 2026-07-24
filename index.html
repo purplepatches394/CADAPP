@@ -6,17 +6,27 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="model-tree">
+    <div class="tree-header">MODEL TREE</div>
+    <div id="tree-list"></div>
+  </div>
+
   <div id="toolbar">
     <button id="rect-tool" class="tool-btn active">Rectangle</button>
     <button id="circle-tool" class="tool-btn">Circle</button>
     <button id="line-tool" class="tool-btn">Line</button>
+    <button id="dimension-tool" class="tool-btn">Dimension</button>
     <button id="grid-snap-tool" class="tool-btn">Grid Snap: Off</button>
+    <button id="construction-tool" class="tool-btn">Construction: Off</button>
   </div>
+
   <canvas id="viewport"></canvas>
+
   <div id="status-bar">
     <span id="coords">X: 0.0  Y: 0.0</span>
     <span id="zoom-level">Zoom: 100%</span>
   </div>
+
   <script src="script.js"></script>
 </body>
 </html>
