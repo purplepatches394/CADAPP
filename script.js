@@ -8,8 +8,8 @@ const coordsLabel = document.getElementById('coords');
 const zoomLabel = document.getElementById('zoom-level');
 
 // --- Coordinate system ---
-let SCALE = 4;        // pixels per mm (this now changes when zooming)
-let panX = 0;          // screen-pixel offset of world origin (0,0)
+let SCALE = 4;
+let panX = 0;
 let panY = 0;
 const GRID_SIZE = 10;
 const MAJOR_EVERY = 5;
@@ -34,19 +34,19 @@ let gridSnapEnabled = false;
 
 const rectBtn = document.getElementById('rect-tool');
 const circleBtn = document.getElementById('circle-tool');
+const lineBtn = document.getElementById('line-tool');
 const gridSnapBtn = document.getElementById('grid-snap-tool');
 
-rectBtn.addEventListener('click', () => {
-  activeTool = 'rectangle';
-  rectBtn.classList.add('active');
-  circleBtn.classList.remove('active');
-});
+function setActiveTool(tool) {
+  activeTool = tool;
+  rectBtn.classList.toggle('active', tool === 'rectangle');
+  circleBtn.classList.toggle('active', tool === 'circle');
+  lineBtn.classList.toggle('active', tool === 'line');
+}
 
-circleBtn.addEventListener('click', () => {
-  activeTool = 'circle';
-  circleBtn.classList.add('active');
-  rectBtn.classList.remove('active');
-});
+rectBtn.addEventListener('click', () => setActiveTool('rectangle'));
+circleBtn.addEventListener('click', () => setActiveTool('circle'));
+lineBtn.addEventListener('click', () => setActiveTool('line'));
 
 gridSnapBtn.addEventListener('click', () => {
   gridSnapEnabled = !gridSnapEnabled;
@@ -75,6 +75,8 @@ function shapeArea(shape) {
     return Math.abs(shape.width * shape.height);
   } else if (shape.type === 'circle') {
     return Math.PI * shape.radius * shape.radius;
+  } else if (shape.type === 'line') {
+    return 0.01; // lines have no area — treat as always "smallest" so they're easy to pick
   }
   return Infinity;
 }
@@ -153,15 +155,40 @@ function drawShapes() {
       ctx.beginPath();
       ctx.arc(center.x, center.y, shape.radius * SCALE, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (shape.type === 'line') {
+      const p1 = worldToScreen(shape.x1, shape.y1);
+      const p2 = worldToScreen(shape.x2, shape.y2);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
     }
   }
 
   drawCrosshair();
 }
 
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lengthSq = dx * dx + dy * dy;
+
+  if (lengthSq === 0) return Math.hypot(px - x1, py - y1);
+
+  let t = ((px - x1) * dx + (py - y1) * dy) / lengthSq;
+  t = Math.max(0, Math.min(1, t));
+
+  const closestX = x1 + t * dx;
+  const closestY = y1 + t * dy;
+
+  return Math.hypot(px - closestX, py - closestY);
+}
+
 function getShapeAt(x, y) {
   let bestMatch = null;
   let bestArea = Infinity;
+
+  const LINE_HIT_TOLERANCE = 2; // world units (mm) — how close you need to click to a line
 
   for (const shape of shapes) {
     let hit = false;
@@ -175,6 +202,9 @@ function getShapeAt(x, y) {
     } else if (shape.type === 'circle') {
       const distance = Math.hypot(x - shape.x, y - shape.y);
       hit = distance <= shape.radius;
+    } else if (shape.type === 'line') {
+      const distance = distanceToSegment(x, y, shape.x1, shape.y1, shape.x2, shape.y2);
+      hit = distance <= LINE_HIT_TOLERANCE;
     }
 
     if (hit) {
@@ -211,8 +241,8 @@ canvas.addEventListener('mousedown', (e) => {
     const hit = getShapeAt(startX, startY);
     if (hit === selectedShape) {
       isMoving = true;
-      moveOffsetX = startX - selectedShape.x;
-      moveOffsetY = startY - selectedShape.y;
+      moveOffsetX = startX - (selectedShape.x ?? selectedShape.x1);
+      moveOffsetY = startY - (selectedShape.y ?? selectedShape.y1);
     }
   }
 });
@@ -237,8 +267,17 @@ canvas.addEventListener('mousemove', (e) => {
   const dragDistance = Math.hypot(currentX - startX, currentY - startY);
 
   if (isMoving) {
-    selectedShape.x = currentX - moveOffsetX;
-    selectedShape.y = currentY - moveOffsetY;
+    if (selectedShape.type === 'line') {
+      const dx = currentX - moveOffsetX - selectedShape.x1;
+      const dy = currentY - moveOffsetY - selectedShape.y1;
+      selectedShape.x1 += dx;
+      selectedShape.y1 += dy;
+      selectedShape.x2 += dx;
+      selectedShape.y2 += dy;
+    } else {
+      selectedShape.x = currentX - moveOffsetX;
+      selectedShape.y = currentY - moveOffsetY;
+    }
     drawShapes();
     return;
   }
@@ -268,6 +307,13 @@ canvas.addEventListener('mousemove', (e) => {
     ctx.beginPath();
     ctx.arc(center.x, center.y, radius * SCALE, 0, Math.PI * 2);
     ctx.stroke();
+  } else if (activeTool === 'line') {
+    const p1 = worldToScreen(startX, startY);
+    const p2 = worldToScreen(currentX, currentY);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
   }
 });
 
@@ -293,6 +339,8 @@ canvas.addEventListener('mouseup', (e) => {
     } else if (activeTool === 'circle') {
       const radius = Math.hypot(currentX - startX, currentY - startY);
       shapes.push({ type: 'circle', x: startX, y: startY, radius });
+    } else if (activeTool === 'line') {
+      shapes.push({ type: 'line', x1: startX, y1: startY, x2: currentX, y2: currentY });
     }
 
     isDrawing = false;
