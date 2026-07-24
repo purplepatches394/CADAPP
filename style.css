@@ -1,11 +1,13 @@
 body {
   margin: 0;
   background: #1c1e21;
+  overflow: hidden;
 }
 
 #viewport {
   display: block;
   background: #1c1e21;
+  cursor: none;
 }
 
 #toolbar {
@@ -33,4 +35,19 @@ body {
   background: #185fa5;
   color: white;
   border-color: #185fa5;
+}
+
+#status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: #26282c;
+  color: #8a8d92;
+  font-size: 12px;
+  padding: 5px 10px;
+  display: flex;
+  justify-content: space-between;
+  font-family: monospace;
 }
