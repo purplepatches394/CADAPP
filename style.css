@@ -1,0 +1,36 @@
+body {
+  margin: 0;
+  background: #1c1e21;
+}
+
+#viewport {
+  display: block;
+  background: #1c1e21;
+}
+
+#toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  background: #2c2e32;
+  padding: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.tool-btn {
+  background: #3a3d42;
+  color: #c7c9cc;
+  border: 1px solid #46484c;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tool-btn.active {
+  background: #185fa5;
+  color: white;
+  border-color: #185fa5;
+}
