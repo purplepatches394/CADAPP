@@ -1,0 +1,27 @@
+{
+  "name": "cad-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "script.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/purplepatches394/CADAPP.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/purplepatches394/CADAPP/issues"
+  },
+  "homepage": "https://github.com/purplepatches394/CADAPP#readme",
+  "dependencies": {
+    "@salusoft89/planegcs": "^1.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}
