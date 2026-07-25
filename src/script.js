@@ -811,6 +811,7 @@ canvas.addEventListener('wheel', (e) => {
   const worldBefore = screenToWorld(e.offsetX, e.offsetY);
 
 canvas.addEventListener('dblclick', async (e) => {
+  console.log('double click fired');
   if (activeTool === 'dimension') return;
 
   const world = screenToWorld(e.offsetX, e.offsetY);
