@@ -1,10 +1,20 @@
 import { solveLineLength } from './solver.js';
+
 const canvas = document.getElementById('viewport');
 const ctx = canvas.getContext('2d');
 
 const coordsLabel = document.getElementById('coords');
 const zoomLabel = document.getElementById('zoom-level');
 const treeList = document.getElementById('tree-list');
+
+const propertyPanel = document.getElementById('property-panel');
+const propLength = document.getElementById('prop-length');
+const propX1 = document.getElementById('prop-x1');
+const propY1 = document.getElementById('prop-y1');
+const propX2 = document.getElementById('prop-x2');
+const propY2 = document.getElementById('prop-y2');
+const propUpdateLengthBtn = document.getElementById('prop-update-length');
+const propUpdatePointsBtn = document.getElementById('prop-update-points');
 
 const SIDEBAR_WIDTH = 180;
 
@@ -126,7 +136,61 @@ function getShapeById(id) {
 function selectShape(shape) {
   selectedShape = shape;
   renderModelTree();
+  updatePropertyPanel();
 }
+
+// --- Property panel (shows up when a line is selected) ---
+function updatePropertyPanel() {
+  if (selectedShape && selectedShape.type === 'line' && !selectedShape.hidden) {
+    propertyPanel.classList.remove('hidden');
+    const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
+    propLength.value = length.toFixed(1);
+    propX1.value = selectedShape.x1.toFixed(1);
+    propY1.value = selectedShape.y1.toFixed(1);
+    propX2.value = selectedShape.x2.toFixed(1);
+    propY2.value = selectedShape.y2.toFixed(1);
+  } else {
+    propertyPanel.classList.add('hidden');
+  }
+}
+
+propUpdateLengthBtn.addEventListener('click', async () => {
+  if (!selectedShape || selectedShape.type !== 'line') return;
+
+  const newLength = parseFloat(propLength.value);
+  if (isNaN(newLength) || newLength <= 0) return;
+
+  const result = await solveLineLength(
+    selectedShape.x1, selectedShape.y1,
+    selectedShape.x2, selectedShape.y2,
+    newLength
+  );
+
+  selectedShape.x2 = result.x;
+  selectedShape.y2 = result.y;
+
+  updatePropertyPanel();
+  drawShapes();
+});
+
+propUpdatePointsBtn.addEventListener('click', () => {
+  if (!selectedShape || selectedShape.type !== 'line') return;
+
+  const x1 = parseFloat(propX1.value);
+  const y1 = parseFloat(propY1.value);
+  const x2 = parseFloat(propX2.value);
+  const y2 = parseFloat(propY2.value);
+
+  if ([x1, y1, x2, y2].some(v => isNaN(v))) return;
+
+  selectedShape.x1 = x1;
+  selectedShape.y1 = y1;
+  selectedShape.x2 = x2;
+  selectedShape.y2 = y2;
+
+  updatePropertyPanel();
+  drawShapes();
+});
 
 // --- Model tree panel ---
 function renderModelTree() {
@@ -166,7 +230,10 @@ function renderModelTree() {
     eyeBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       shape.hidden = !shape.hidden;
-      if (shape.hidden && selectedShape === shape) selectedShape = null;
+      if (shape.hidden && selectedShape === shape) {
+        selectedShape = null;
+        updatePropertyPanel();
+      }
       renderModelTree();
       drawShapes();
     });
@@ -671,6 +738,7 @@ canvas.addEventListener('mousemove', (e) => {
       selectedShape.y1 += dy;
       selectedShape.x2 += dx;
       selectedShape.y2 += dy;
+      updatePropertyPanel();
     } else {
       selectedShape.x = currentX - moveOffsetX;
       selectedShape.y = currentY - moveOffsetY;
@@ -810,30 +878,6 @@ canvas.addEventListener('wheel', (e) => {
 
   const worldBefore = screenToWorld(e.offsetX, e.offsetY);
 
-canvas.addEventListener('dblclick', async (e) => {
-  alert('double click fired');
-  if (activeTool === 'dimension') return;
-
-  const world = screenToWorld(e.offsetX, e.offsetY);
-  const hit = getShapeAt(world.x, world.y);
-  if (!hit || hit.type !== 'line') return;
-
-  const currentLength = Math.hypot(hit.x2 - hit.x1, hit.y2 - hit.y1);
-  const input = prompt('New length (mm):', currentLength.toFixed(1));
-  if (input === null) return;
-
-  const newLength = parseFloat(input);
-  if (isNaN(newLength) || newLength <= 0) return;
-
-  const result = await solveLineLength(hit.x1, hit.y1, hit.x2, hit.y2, newLength);
-  hit.x2 = result.x;
-  hit.y2 = result.y;
-  drawShapes();
-});
-
-
-
-
   const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
   SCALE = Math.min(MAX_SCALE, Math.max(MIN_SCALE, SCALE * zoomFactor));
 
@@ -857,6 +901,7 @@ document.addEventListener('keydown', (e) => {
     shapes.splice(index, 1);
     selectedShape = null;
     renderModelTree();
+    updatePropertyPanel();
     drawShapes();
     return;
   }
