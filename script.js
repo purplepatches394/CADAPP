@@ -2600,13 +2600,23 @@ function getModule() {
   return modPromise;
 }
 async function solveLineLength(x1, y1, x2, y2, newDistance) {
+  const result = await solveLineLengthAngle(x1, y1, x2, y2, { length: newDistance });
+  return result;
+}
+async function solveLineLengthAngle(x1, y1, x2, y2, { length, angle } = {}) {
   const mod = await getModule();
   const gcs_system = new mod.GcsSystem();
   const gcs_wrapper = new GcsWrapper(gcs_system);
+  const currentLength = Math.hypot(x2 - x1, y2 - y1);
+  const currentAngleDeg = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+  const targetLength = length !== void 0 ? length : currentLength;
+  const targetAngleDeg = angle !== void 0 ? angle : currentAngleDeg;
+  const targetAngleRad = targetAngleDeg * Math.PI / 180;
   const primitives = [
     { id: "p1", type: "point", x: x1, y: y1, fixed: true },
     { id: "p2", type: "point", x: x2, y: y2, fixed: false },
-    { id: "d", type: "p2p_distance", p1_id: "p1", p2_id: "p2", distance: newDistance }
+    { id: "d", type: "p2p_distance", p1_id: "p1", p2_id: "p2", distance: targetLength },
+    { id: "a", type: "p2p_angle", p1_id: "p1", p2_id: "p2", angle: targetAngleRad }
   ];
   gcs_wrapper.push_primitives_and_params(primitives);
   gcs_wrapper.solve();
@@ -2918,19 +2928,33 @@ var require_script = __commonJS({
       propertyPanel.appendChild(header);
       if (selectedShape.type === "line") {
         const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
+        const angle = Math.atan2(selectedShape.y2 - selectedShape.y1, selectedShape.x2 - selectedShape.x1) * 180 / Math.PI;
         const lenField = makeField("Length (mm)", length);
         propertyPanel.appendChild(lenField.label);
         const lenBtn = makeButton("Update Length");
         lenBtn.addEventListener("click", async () => {
           const newLength = parseFloat(lenField.input.value);
           if (isNaN(newLength) || newLength <= 0) return;
-          const result = await solveLineLength(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, newLength);
+          const result = await solveLineLengthAngle(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, { length: newLength });
           selectedShape.x2 = result.x;
           selectedShape.y2 = result.y;
           updatePropertyPanel();
           drawShapes();
         });
         propertyPanel.appendChild(lenBtn);
+        const angleField = makeField("Angle (deg)", angle);
+        propertyPanel.appendChild(angleField.label);
+        const angleBtn = makeButton("Update Angle");
+        angleBtn.addEventListener("click", async () => {
+          const newAngle = parseFloat(angleField.input.value);
+          if (isNaN(newAngle)) return;
+          const result = await solveLineLengthAngle(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, { angle: newAngle });
+          selectedShape.x2 = result.x;
+          selectedShape.y2 = result.y;
+          updatePropertyPanel();
+          drawShapes();
+        });
+        propertyPanel.appendChild(angleBtn);
         propertyPanel.appendChild(makeDivider());
         const x1 = makeField("Start X", selectedShape.x1);
         const y1 = makeField("Start Y", selectedShape.y1);
