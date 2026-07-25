@@ -1,4 +1,4 @@
-import { solveLineLength } from './solver.js';
+import { solveLineLength, solveLineLengthAngle } from './solver.js';
 
 const canvas = document.getElementById('viewport');
 const ctx = canvas.getContext('2d');
@@ -39,10 +39,11 @@ function snapToGrid(value) {
 }
 
 // --- Tools ---
-let activeTool = 'rectangle';
+let activeTool = 'select';
 let gridSnapEnabled = false;
 let constructionModeEnabled = false;
 
+const selectBtn = document.getElementById('select-tool');
 const rectBtn = document.getElementById('rect-tool');
 const circleBtn = document.getElementById('circle-tool');
 const lineBtn = document.getElementById('line-tool');
@@ -55,17 +56,33 @@ let hoverEntity = null;
 let hoverDimensionShape = null;
 let justFinishedDimensionDrag = false;
 
+let drawStartPoint = null;
+let typedLength = '';
+let typedAngle = '';
+let typedRadius = '';
+let activeTypedField = 'length';
+let lastMouseWorldX = 0;
+let lastMouseWorldY = 0;
+
 function setActiveTool(tool) {
   activeTool = tool;
+  selectBtn.classList.toggle('active', tool === 'select');
   rectBtn.classList.toggle('active', tool === 'rectangle');
   circleBtn.classList.toggle('active', tool === 'circle');
   lineBtn.classList.toggle('active', tool === 'line');
   dimensionBtn.classList.toggle('active', tool === 'dimension');
+
   dimensionFirstEntity = null;
   hoverEntity = null;
   hoverDimensionShape = null;
+  drawStartPoint = null;
+  typedLength = '';
+  typedAngle = '';
+  typedRadius = '';
+  drawShapes();
 }
 
+selectBtn.addEventListener('click', () => setActiveTool('select'));
 rectBtn.addEventListener('click', () => setActiveTool('rectangle'));
 circleBtn.addEventListener('click', () => setActiveTool('circle'));
 lineBtn.addEventListener('click', () => setActiveTool('line'));
@@ -85,7 +102,6 @@ constructionBtn.addEventListener('click', () => {
 
 // --- State ---
 let mouseIsDown = false;
-let isDrawing = false;
 let isMoving = false;
 let isMovingDimensionOffset = false;
 let isDraggingHandle = false;
@@ -99,7 +115,6 @@ let mouseScreenX = 0;
 let mouseScreenY = 0;
 let mouseOnCanvas = false;
 
-const DRAG_THRESHOLD = 2;
 const ENTITY_TOLERANCE = 3;
 const LINE_HIT_TOLERANCE = 2;
 const HANDLE_HIT_PIXELS = 8;
@@ -124,6 +139,55 @@ function createShape(props) {
   return props;
 }
 
+function commitShape(endX, endY) {
+  if (activeTool === 'rectangle') {
+    const width = endX - drawStartPoint.x;
+    const height = endY - drawStartPoint.y;
+    createShape({ type: 'rectangle', x: drawStartPoint.x, y: drawStartPoint.y, width, height, isConstruction: constructionModeEnabled });
+  } else if (activeTool === 'circle') {
+    const radius = Math.hypot(endX - drawStartPoint.x, endY - drawStartPoint.y);
+    createShape({ type: 'circle', x: drawStartPoint.x, y: drawStartPoint.y, radius, isConstruction: constructionModeEnabled });
+  } else if (activeTool === 'line') {
+    createShape({ type: 'line', x1: drawStartPoint.x, y1: drawStartPoint.y, x2: endX, y2: endY, isConstruction: constructionModeEnabled });
+  }
+  drawStartPoint = null;
+  typedLength = '';
+  typedAngle = '';
+  typedRadius = '';
+}
+
+function finalizeDrawFromTyped() {
+  if (!drawStartPoint) return;
+  let endX, endY;
+
+  if (activeTool === 'line') {
+    const length = typedLength !== '' ? parseFloat(typedLength) : Math.hypot(lastMouseWorldX - drawStartPoint.x, lastMouseWorldY - drawStartPoint.y);
+    const angleDeg = typedAngle !== '' ? parseFloat(typedAngle) : Math.atan2(lastMouseWorldY - drawStartPoint.y, lastMouseWorldX - drawStartPoint.x) * 180 / Math.PI;
+    if (isNaN(length) || isNaN(angleDeg)) return;
+    const angleRad = angleDeg * Math.PI / 180;
+    endX = drawStartPoint.x + Math.cos(angleRad) * length;
+    endY = drawStartPoint.y + Math.sin(angleRad) * length;
+  } else if (activeTool === 'circle') {
+    if (typedRadius === '') return;
+    const radius = parseFloat(typedRadius);
+    if (isNaN(radius)) return;
+    const angle = Math.atan2(lastMouseWorldY - drawStartPoint.y, lastMouseWorldX - drawStartPoint.x);
+    endX = drawStartPoint.x + Math.cos(angle) * radius;
+    endY = drawStartPoint.y + Math.sin(angle) * radius;
+  } else {
+    return;
+  }
+
+  commitShape(endX, endY);
+  drawShapes();
+}
+
+function redrawPreview() {
+  if (!drawStartPoint) return;
+  drawShapes();
+  drawLivePreviewAndTooltip(lastMouseWorldX, lastMouseWorldY);
+}
+
 function getShapeById(id) {
   return shapes.find(s => s.id === id) || null;
 }
@@ -134,7 +198,7 @@ function selectShape(shape) {
   updatePropertyPanel();
 }
 
-// --- Vertex helpers (points that belong to a shape: corners, endpoints, centers) ---
+// --- Vertex helpers ---
 function getVertexPosition(shapeId, vertexIndex) {
   const shape = getShapeById(shapeId);
   if (!shape) return null;
@@ -157,8 +221,6 @@ function getVertexPosition(shapeId, vertexIndex) {
   return null;
 }
 
-// Moves a specific vertex to (x, y), updating the shape it belongs to appropriately.
-// Rectangle corners resize the rectangle, keeping the opposite corner fixed.
 function moveVertex(shapeId, vertexIndex, x, y) {
   const shape = getShapeById(shapeId);
   if (!shape) return;
@@ -184,7 +246,7 @@ function moveVertex(shapeId, vertexIndex, x, y) {
   }
 }
 
-// --- Selection handles (for the currently selected shape) ---
+// --- Selection handles ---
 function getHandlesForShape(shape) {
   if (!shape) return [];
 
@@ -223,7 +285,7 @@ function getHandleAt(screenX, screenY) {
   return null;
 }
 
-// --- Property panel (shows fields relevant to the selected shape's type) ---
+// --- Property panel ---
 function makeField(labelText, value) {
   const label = document.createElement('label');
   label.textContent = labelText;
@@ -265,20 +327,35 @@ function updatePropertyPanel() {
 
   if (selectedShape.type === 'line') {
     const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
+    const angle = Math.atan2(selectedShape.y2 - selectedShape.y1, selectedShape.x2 - selectedShape.x1) * 180 / Math.PI;
+
     const lenField = makeField('Length (mm)', length);
     propertyPanel.appendChild(lenField.label);
-
     const lenBtn = makeButton('Update Length');
     lenBtn.addEventListener('click', async () => {
       const newLength = parseFloat(lenField.input.value);
       if (isNaN(newLength) || newLength <= 0) return;
-      const result = await solveLineLength(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, newLength);
+      const result = await solveLineLengthAngle(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, { length: newLength });
       selectedShape.x2 = result.x;
       selectedShape.y2 = result.y;
       updatePropertyPanel();
       drawShapes();
     });
     propertyPanel.appendChild(lenBtn);
+
+    const angleField = makeField('Angle (deg)', angle);
+    propertyPanel.appendChild(angleField.label);
+    const angleBtn = makeButton('Update Angle');
+    angleBtn.addEventListener('click', async () => {
+      const newAngle = parseFloat(angleField.input.value);
+      if (isNaN(newAngle)) return;
+      const result = await solveLineLengthAngle(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, { angle: newAngle });
+      selectedShape.x2 = result.x;
+      selectedShape.y2 = result.y;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propertyPanel.appendChild(angleBtn);
     propertyPanel.appendChild(makeDivider());
 
     const x1 = makeField('Start X', selectedShape.x1);
@@ -433,7 +510,7 @@ function shapeArea(shape) {
   return Infinity;
 }
 
-// --- Entity system (vertices + edges you can dimension against) ---
+// --- Entity system ---
 function resolveEntity(ref) {
   const shape = getShapeById(ref.shapeId);
   if (!shape || shape.hidden) return null;
@@ -444,7 +521,6 @@ function resolveEntity(ref) {
     return { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
   }
 
-  // kind === 'edge'
   if (ref.edgeIndex === 'circle') {
     return { x1: shape.x, y1: shape.y, x2: shape.x, y2: shape.y };
   }
@@ -485,8 +561,6 @@ function getAllEntityRefs() {
   return refs;
 }
 
-// Vertices are preferred over edges — point-to-point snapping takes priority,
-// falling back to nearest-point-on-edge only if no vertex is close enough.
 function getEntityAt(x, y) {
   let bestVertex = null, bestVertexDist = ENTITY_TOLERANCE;
   let bestEdge = null, bestEdgeDist = ENTITY_TOLERANCE;
@@ -664,7 +738,7 @@ function drawEntityHighlight(ref, color) {
 }
 
 function drawHandles() {
-  if (activeTool === 'dimension') return;
+  if (activeTool !== 'select') return;
   if (!selectedShape || selectedShape.hidden) return;
 
   for (const h of getHandlesForShape(selectedShape)) {
@@ -676,6 +750,101 @@ function drawHandles() {
     ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+  }
+}
+
+function drawTooltip(x, y, rows) {
+  ctx.font = '11px monospace';
+  const lineHeight = 15;
+  const padding = 6;
+
+  const texts = rows.map(r => `${r.label}${r.value}`);
+  let maxWidth = 0;
+  for (const t of texts) maxWidth = Math.max(maxWidth, ctx.measureText(t).width);
+
+  const boxWidth = maxWidth + padding * 2;
+  const boxHeight = rows.length * lineHeight + padding * 2 - 3;
+
+  ctx.fillStyle = '#26282c';
+  ctx.strokeStyle = '#46484c';
+  ctx.lineWidth = 1;
+  ctx.fillRect(x, y, boxWidth, boxHeight);
+  ctx.strokeRect(x, y, boxWidth, boxHeight);
+
+  ctx.textAlign = 'left';
+  rows.forEach((r, i) => {
+    ctx.fillStyle = r.active ? '#e8b04b' : '#c7c9cc';
+    ctx.fillText(`${r.label}${r.value}`, x + padding, y + padding + (i + 1) * lineHeight - 4);
+  });
+}
+
+function drawLivePreviewAndTooltip(mouseWorldXRaw, mouseWorldYRaw) {
+  const mouseWorldX = gridSnapEnabled ? snapToGrid(mouseWorldXRaw) : mouseWorldXRaw;
+  const mouseWorldY = gridSnapEnabled ? snapToGrid(mouseWorldYRaw) : mouseWorldYRaw;
+
+  if (activeTool === 'line') {
+    let length = Math.hypot(mouseWorldX - drawStartPoint.x, mouseWorldY - drawStartPoint.y);
+    let angleDeg = Math.atan2(mouseWorldY - drawStartPoint.y, mouseWorldX - drawStartPoint.x) * 180 / Math.PI;
+
+    if (typedLength !== '') length = parseFloat(typedLength) || 0;
+    if (typedAngle !== '') angleDeg = parseFloat(typedAngle) || 0;
+
+    const angleRad = angleDeg * Math.PI / 180;
+    const endX = drawStartPoint.x + Math.cos(angleRad) * length;
+    const endY = drawStartPoint.y + Math.sin(angleRad) * length;
+
+    ctx.setLineDash(constructionModeEnabled ? [6, 4] : []);
+    ctx.strokeStyle = constructionModeEnabled ? '#7a8a99' : '#5b9bd5';
+    ctx.lineWidth = 2;
+    const p1 = worldToScreen(drawStartPoint.x, drawStartPoint.y);
+    const p2 = worldToScreen(endX, endY);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const lengthText = (typedLength !== '' ? typedLength : length.toFixed(1)) + ' mm';
+    const angleText = (typedAngle !== '' ? typedAngle : angleDeg.toFixed(1)) + '\u00b0';
+    drawTooltip(p2.x + 14, p2.y - 30, [
+      { label: 'L: ', value: lengthText, active: activeTypedField === 'length' },
+      { label: 'A: ', value: angleText, active: activeTypedField === 'angle' }
+    ]);
+
+  } else if (activeTool === 'circle') {
+    let radius = Math.hypot(mouseWorldX - drawStartPoint.x, mouseWorldY - drawStartPoint.y);
+    if (typedRadius !== '') radius = parseFloat(typedRadius) || 0;
+
+    ctx.setLineDash(constructionModeEnabled ? [6, 4] : []);
+    ctx.strokeStyle = constructionModeEnabled ? '#7a8a99' : '#5b9bd5';
+    ctx.lineWidth = 2;
+    const center = worldToScreen(drawStartPoint.x, drawStartPoint.y);
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, radius * SCALE, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const radiusText = (typedRadius !== '' ? typedRadius : radius.toFixed(1)) + ' mm';
+    drawTooltip(center.x + radius * SCALE + 10, center.y - 18, [
+      { label: 'R: ', value: radiusText, active: true }
+    ]);
+
+  } else if (activeTool === 'rectangle') {
+    const width = mouseWorldX - drawStartPoint.x;
+    const height = mouseWorldY - drawStartPoint.y;
+
+    ctx.setLineDash(constructionModeEnabled ? [6, 4] : []);
+    ctx.strokeStyle = constructionModeEnabled ? '#7a8a99' : '#5b9bd5';
+    ctx.lineWidth = 2;
+    const topLeft = worldToScreen(drawStartPoint.x, drawStartPoint.y);
+    ctx.strokeRect(topLeft.x, topLeft.y, width * SCALE, height * SCALE);
+    ctx.setLineDash([]);
+
+    const p2 = worldToScreen(mouseWorldX, mouseWorldY);
+    drawTooltip(p2.x + 12, p2.y - 30, [
+      { label: 'W: ', value: Math.abs(width).toFixed(1) + ' mm', active: false },
+      { label: 'H: ', value: Math.abs(height).toFixed(1) + ' mm', active: false }
+    ]);
   }
 }
 
@@ -864,8 +1033,9 @@ canvas.addEventListener('mousedown', (e) => {
     return;
   }
 
+  if (activeTool !== 'select') return;
+
   mouseIsDown = true;
-  isDrawing = false;
   isMoving = false;
   isMovingDimensionOffset = false;
   isDraggingHandle = false;
@@ -909,6 +1079,8 @@ canvas.addEventListener('mousemove', (e) => {
   }
 
   const worldPos = screenToWorld(e.offsetX, e.offsetY);
+  lastMouseWorldX = worldPos.x;
+  lastMouseWorldY = worldPos.y;
   coordsLabel.textContent = `X: ${worldPos.x.toFixed(1)}  Y: ${worldPos.y.toFixed(1)}`;
 
   if (isDraggingHandle && draggingHandleInfo) {
@@ -941,6 +1113,17 @@ canvas.addEventListener('mousemove', (e) => {
     return;
   }
 
+  if ((activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'line') && drawStartPoint) {
+    drawShapes();
+    drawLivePreviewAndTooltip(worldPos.x, worldPos.y);
+    return;
+  }
+
+  if (activeTool !== 'select') {
+    drawShapes();
+    return;
+  }
+
   if (!mouseIsDown) {
     drawShapes();
     return;
@@ -949,8 +1132,6 @@ canvas.addEventListener('mousemove', (e) => {
   const world = getWorldMouse(e);
   currentX = world.x;
   currentY = world.y;
-
-  const dragDistance = Math.hypot(currentX - startX, currentY - startY);
 
   if (isMoving) {
     if (selectedShape.type === 'line') {
@@ -966,50 +1147,7 @@ canvas.addEventListener('mousemove', (e) => {
     }
     updatePropertyPanel();
     drawShapes();
-    return;
   }
-
-  if (!isDrawing && dragDistance > DRAG_THRESHOLD) {
-    isDrawing = true;
-    selectShape(null);
-  }
-
-  if (!isDrawing) {
-    drawShapes();
-    return;
-  }
-
-  drawShapes();
-
-  if (constructionModeEnabled) {
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = '#7a8a99';
-  } else {
-    ctx.setLineDash([]);
-    ctx.strokeStyle = '#5b9bd5';
-  }
-  ctx.lineWidth = 2;
-
-  if (activeTool === 'rectangle') {
-    const topLeft = worldToScreen(startX, startY);
-    const size = { x: (currentX - startX) * SCALE, y: (currentY - startY) * SCALE };
-    ctx.strokeRect(topLeft.x, topLeft.y, size.x, size.y);
-  } else if (activeTool === 'circle') {
-    const radius = Math.hypot(currentX - startX, currentY - startY);
-    const center = worldToScreen(startX, startY);
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, radius * SCALE, 0, Math.PI * 2);
-    ctx.stroke();
-  } else if (activeTool === 'line') {
-    const p1 = worldToScreen(startX, startY);
-    const p2 = worldToScreen(currentX, currentY);
-    ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(p2.x, p2.y);
-    ctx.stroke();
-  }
-
-  ctx.setLineDash([]);
 });
 
 canvas.addEventListener('mouseleave', () => {
@@ -1023,35 +1161,51 @@ canvas.addEventListener('click', (e) => {
     return;
   }
 
-  if (activeTool !== 'dimension') return;
+  if (activeTool === 'dimension') {
+    const world = screenToWorld(e.offsetX, e.offsetY);
+    if (getDimensionAt(world.x, world.y)) return;
 
-  const world = screenToWorld(e.offsetX, e.offsetY);
+    const entity = getEntityAt(world.x, world.y);
+    if (!entity) return;
 
-  if (getDimensionAt(world.x, world.y)) return;
+    if (!dimensionFirstEntity) {
+      dimensionFirstEntity = entity;
+    } else {
+      const isSame = entity.shapeId === dimensionFirstEntity.shapeId
+        && entity.kind === dimensionFirstEntity.kind
+        && entity.edgeIndex === dimensionFirstEntity.edgeIndex
+        && entity.vertexIndex === dimensionFirstEntity.vertexIndex;
 
-  const entity = getEntityAt(world.x, world.y);
-  if (!entity) return;
-
-  if (!dimensionFirstEntity) {
-    dimensionFirstEntity = entity;
-  } else {
-    const isSame = entity.shapeId === dimensionFirstEntity.shapeId
-      && entity.kind === dimensionFirstEntity.kind
-      && entity.edgeIndex === dimensionFirstEntity.edgeIndex
-      && entity.vertexIndex === dimensionFirstEntity.vertexIndex;
-
-    if (!isSame) {
-      createShape({
-        type: 'dimension',
-        entityA: dimensionFirstEntity,
-        entityB: entity,
-        offset: 15
-      });
-      dimensionFirstEntity = null;
+      if (!isSame) {
+        createShape({
+          type: 'dimension',
+          entityA: dimensionFirstEntity,
+          entityB: entity,
+          offset: 15
+        });
+        dimensionFirstEntity = null;
+      }
     }
+    drawShapes();
+    return;
   }
 
-  drawShapes();
+  if (activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'line') {
+    const raw = screenToWorld(e.offsetX, e.offsetY);
+    const world = gridSnapEnabled ? { x: snapToGrid(raw.x), y: snapToGrid(raw.y) } : raw;
+
+    if (!drawStartPoint) {
+      drawStartPoint = { x: world.x, y: world.y };
+      typedLength = '';
+      typedAngle = '';
+      typedRadius = '';
+      activeTypedField = 'length';
+    } else {
+      commitShape(world.x, world.y);
+    }
+    drawShapes();
+    return;
+  }
 });
 
 document.addEventListener('mouseup', (e) => {
@@ -1083,23 +1237,6 @@ document.addEventListener('mouseup', (e) => {
     return;
   }
 
-  if (isDrawing) {
-    if (activeTool === 'rectangle') {
-      const width = currentX - startX;
-      const height = currentY - startY;
-      createShape({ type: 'rectangle', x: startX, y: startY, width, height, isConstruction: constructionModeEnabled });
-    } else if (activeTool === 'circle') {
-      const radius = Math.hypot(currentX - startX, currentY - startY);
-      createShape({ type: 'circle', x: startX, y: startY, radius, isConstruction: constructionModeEnabled });
-    } else if (activeTool === 'line') {
-      createShape({ type: 'line', x1: startX, y1: startY, x2: currentX, y2: currentY, isConstruction: constructionModeEnabled });
-    }
-
-    isDrawing = false;
-    drawShapes();
-    return;
-  }
-
   selectShape(getShapeAt(startX, startY));
   drawShapes();
 });
@@ -1125,8 +1262,54 @@ canvas.addEventListener('wheel', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     dimensionFirstEntity = null;
+    drawStartPoint = null;
+    typedLength = '';
+    typedAngle = '';
+    typedRadius = '';
     drawShapes();
     return;
+  }
+
+  if (drawStartPoint && activeTool === 'line') {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      activeTypedField = activeTypedField === 'length' ? 'angle' : 'length';
+      redrawPreview();
+      return;
+    }
+    if (e.key === 'Enter') {
+      finalizeDrawFromTyped();
+      return;
+    }
+    if (e.key === 'Backspace') {
+      if (activeTypedField === 'length') typedLength = typedLength.slice(0, -1);
+      else typedAngle = typedAngle.slice(0, -1);
+      redrawPreview();
+      return;
+    }
+    if (/^[0-9.-]$/.test(e.key)) {
+      if (activeTypedField === 'length') typedLength += e.key;
+      else typedAngle += e.key;
+      redrawPreview();
+      return;
+    }
+  }
+
+  if (drawStartPoint && activeTool === 'circle') {
+    if (e.key === 'Enter') {
+      finalizeDrawFromTyped();
+      return;
+    }
+    if (e.key === 'Backspace') {
+      typedRadius = typedRadius.slice(0, -1);
+      redrawPreview();
+      return;
+    }
+    if (/^[0-9.-]$/.test(e.key)) {
+      typedRadius += e.key;
+      redrawPreview();
+      return;
+    }
   }
 
   if (e.key === 'Delete' && selectedShape) {

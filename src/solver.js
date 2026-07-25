@@ -11,16 +11,34 @@ function getModule() {
 
 // Given a fixed point (x1,y1) and a movable point currently at (x2,y2),
 // returns where the movable point must go so it's exactly `newDistance`
-// away from the fixed point — calculated by the real constraint solver.
+// away from the fixed point.
 export async function solveLineLength(x1, y1, x2, y2, newDistance) {
+  const result = await solveLineLengthAngle(x1, y1, x2, y2, { length: newDistance });
+  return result;
+}
+
+// General version: fixes point 1, keeps point 2's CURRENT length and angle
+// unless you explicitly override one (or both) via the options object.
+// This is what lets "update length" and "update angle" both work through
+// a single solver call, without accidentally changing the property you
+// weren't trying to edit.
+export async function solveLineLengthAngle(x1, y1, x2, y2, { length, angle } = {}) {
   const mod = await getModule();
   const gcs_system = new mod.GcsSystem();
   const gcs_wrapper = new GcsWrapper(gcs_system);
 
+  const currentLength = Math.hypot(x2 - x1, y2 - y1);
+  const currentAngleDeg = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+
+  const targetLength = length !== undefined ? length : currentLength;
+  const targetAngleDeg = angle !== undefined ? angle : currentAngleDeg;
+  const targetAngleRad = targetAngleDeg * Math.PI / 180;
+
   const primitives = [
     { id: 'p1', type: 'point', x: x1, y: y1, fixed: true },
     { id: 'p2', type: 'point', x: x2, y: y2, fixed: false },
-    { id: 'd', type: 'p2p_distance', p1_id: 'p1', p2_id: 'p2', distance: newDistance }
+    { id: 'd', type: 'p2p_distance', p1_id: 'p1', p2_id: 'p2', distance: targetLength },
+    { id: 'a', type: 'p2p_angle', p1_id: 'p1', p2_id: 'p2', angle: targetAngleRad }
   ];
 
   gcs_wrapper.push_primitives_and_params(primitives);
