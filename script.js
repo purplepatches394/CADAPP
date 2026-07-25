@@ -2633,6 +2633,14 @@ var require_script = __commonJS({
     var coordsLabel = document.getElementById("coords");
     var zoomLabel = document.getElementById("zoom-level");
     var treeList = document.getElementById("tree-list");
+    var propertyPanel = document.getElementById("property-panel");
+    var propLength = document.getElementById("prop-length");
+    var propX1 = document.getElementById("prop-x1");
+    var propY1 = document.getElementById("prop-y1");
+    var propX2 = document.getElementById("prop-x2");
+    var propY2 = document.getElementById("prop-y2");
+    var propUpdateLengthBtn = document.getElementById("prop-update-length");
+    var propUpdatePointsBtn = document.getElementById("prop-update-points");
     var SIDEBAR_WIDTH = 180;
     function resizeCanvas() {
       canvas.width = window.innerWidth - SIDEBAR_WIDTH;
@@ -2738,7 +2746,51 @@ var require_script = __commonJS({
     function selectShape(shape) {
       selectedShape = shape;
       renderModelTree();
+      updatePropertyPanel();
     }
+    function updatePropertyPanel() {
+      if (selectedShape && selectedShape.type === "line" && !selectedShape.hidden) {
+        propertyPanel.classList.remove("hidden");
+        const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
+        propLength.value = length.toFixed(1);
+        propX1.value = selectedShape.x1.toFixed(1);
+        propY1.value = selectedShape.y1.toFixed(1);
+        propX2.value = selectedShape.x2.toFixed(1);
+        propY2.value = selectedShape.y2.toFixed(1);
+      } else {
+        propertyPanel.classList.add("hidden");
+      }
+    }
+    propUpdateLengthBtn.addEventListener("click", async () => {
+      if (!selectedShape || selectedShape.type !== "line") return;
+      const newLength = parseFloat(propLength.value);
+      if (isNaN(newLength) || newLength <= 0) return;
+      const result = await solveLineLength(
+        selectedShape.x1,
+        selectedShape.y1,
+        selectedShape.x2,
+        selectedShape.y2,
+        newLength
+      );
+      selectedShape.x2 = result.x;
+      selectedShape.y2 = result.y;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propUpdatePointsBtn.addEventListener("click", () => {
+      if (!selectedShape || selectedShape.type !== "line") return;
+      const x1 = parseFloat(propX1.value);
+      const y1 = parseFloat(propY1.value);
+      const x2 = parseFloat(propX2.value);
+      const y2 = parseFloat(propY2.value);
+      if ([x1, y1, x2, y2].some((v) => isNaN(v))) return;
+      selectedShape.x1 = x1;
+      selectedShape.y1 = y1;
+      selectedShape.x2 = x2;
+      selectedShape.y2 = y2;
+      updatePropertyPanel();
+      drawShapes();
+    });
     function renderModelTree() {
       treeList.innerHTML = "";
       for (const shape of shapes) {
@@ -2771,7 +2823,10 @@ var require_script = __commonJS({
         eyeBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
           shape.hidden = !shape.hidden;
-          if (shape.hidden && selectedShape === shape) selectedShape = null;
+          if (shape.hidden && selectedShape === shape) {
+            selectedShape = null;
+            updatePropertyPanel();
+          }
           renderModelTree();
           drawShapes();
         });
@@ -3183,6 +3238,7 @@ var require_script = __commonJS({
           selectedShape.y1 += dy;
           selectedShape.x2 += dx;
           selectedShape.y2 += dy;
+          updatePropertyPanel();
         } else {
           selectedShape.x = currentX - moveOffsetX;
           selectedShape.y = currentY - moveOffsetY;
@@ -3297,22 +3353,6 @@ var require_script = __commonJS({
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
       const worldBefore = screenToWorld(e.offsetX, e.offsetY);
-      canvas.addEventListener("dblclick", async (e2) => {
-        alert("double click fired");
-        if (activeTool === "dimension") return;
-        const world = screenToWorld(e2.offsetX, e2.offsetY);
-        const hit = getShapeAt(world.x, world.y);
-        if (!hit || hit.type !== "line") return;
-        const currentLength = Math.hypot(hit.x2 - hit.x1, hit.y2 - hit.y1);
-        const input = prompt("New length (mm):", currentLength.toFixed(1));
-        if (input === null) return;
-        const newLength = parseFloat(input);
-        if (isNaN(newLength) || newLength <= 0) return;
-        const result = await solveLineLength(hit.x1, hit.y1, hit.x2, hit.y2, newLength);
-        hit.x2 = result.x;
-        hit.y2 = result.y;
-        drawShapes();
-      });
       const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
       SCALE = Math.min(MAX_SCALE, Math.max(MIN_SCALE, SCALE * zoomFactor));
       panX = e.offsetX - worldBefore.x * SCALE;
@@ -3331,6 +3371,7 @@ var require_script = __commonJS({
         shapes.splice(index, 1);
         selectedShape = null;
         renderModelTree();
+        updatePropertyPanel();
         drawShapes();
         return;
       }

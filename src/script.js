@@ -6,15 +6,7 @@ const ctx = canvas.getContext('2d');
 const coordsLabel = document.getElementById('coords');
 const zoomLabel = document.getElementById('zoom-level');
 const treeList = document.getElementById('tree-list');
-
 const propertyPanel = document.getElementById('property-panel');
-const propLength = document.getElementById('prop-length');
-const propX1 = document.getElementById('prop-x1');
-const propY1 = document.getElementById('prop-y1');
-const propX2 = document.getElementById('prop-x2');
-const propY2 = document.getElementById('prop-y2');
-const propUpdateLengthBtn = document.getElementById('prop-update-length');
-const propUpdatePointsBtn = document.getElementById('prop-update-points');
 
 const SIDEBAR_WIDTH = 180;
 
@@ -96,6 +88,8 @@ let mouseIsDown = false;
 let isDrawing = false;
 let isMoving = false;
 let isMovingDimensionOffset = false;
+let isDraggingHandle = false;
+let draggingHandleInfo = null;
 let isPanning = false;
 let panStartX, panStartY, panStartPanX, panStartPanY;
 let startX, startY;
@@ -108,6 +102,7 @@ let mouseOnCanvas = false;
 const DRAG_THRESHOLD = 2;
 const ENTITY_TOLERANCE = 3;
 const LINE_HIT_TOLERANCE = 2;
+const HANDLE_HIT_PIXELS = 8;
 
 let nextShapeId = 1;
 const typeCounters = { rectangle: 0, circle: 0, line: 0, dimension: 0 };
@@ -139,58 +134,237 @@ function selectShape(shape) {
   updatePropertyPanel();
 }
 
-// --- Property panel (shows up when a line is selected) ---
-function updatePropertyPanel() {
-  if (selectedShape && selectedShape.type === 'line' && !selectedShape.hidden) {
-    propertyPanel.classList.remove('hidden');
-    const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
-    propLength.value = length.toFixed(1);
-    propX1.value = selectedShape.x1.toFixed(1);
-    propY1.value = selectedShape.y1.toFixed(1);
-    propX2.value = selectedShape.x2.toFixed(1);
-    propY2.value = selectedShape.y2.toFixed(1);
-  } else {
-    propertyPanel.classList.add('hidden');
+// --- Vertex helpers (points that belong to a shape: corners, endpoints, centers) ---
+function getVertexPosition(shapeId, vertexIndex) {
+  const shape = getShapeById(shapeId);
+  if (!shape) return null;
+
+  if (shape.type === 'line') {
+    return vertexIndex === 0 ? { x: shape.x1, y: shape.y1 } : { x: shape.x2, y: shape.y2 };
+  }
+  if (shape.type === 'circle') {
+    return { x: shape.x, y: shape.y };
+  }
+  if (shape.type === 'rectangle') {
+    const corners = [
+      { x: shape.x, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y + shape.height },
+      { x: shape.x, y: shape.y + shape.height }
+    ];
+    return corners[vertexIndex];
+  }
+  return null;
+}
+
+// Moves a specific vertex to (x, y), updating the shape it belongs to appropriately.
+// Rectangle corners resize the rectangle, keeping the opposite corner fixed.
+function moveVertex(shapeId, vertexIndex, x, y) {
+  const shape = getShapeById(shapeId);
+  if (!shape) return;
+
+  if (shape.type === 'line') {
+    if (vertexIndex === 0) { shape.x1 = x; shape.y1 = y; }
+    else { shape.x2 = x; shape.y2 = y; }
+  } else if (shape.type === 'circle') {
+    shape.x = x; shape.y = y;
+  } else if (shape.type === 'rectangle') {
+    const corners = [
+      { x: shape.x, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y + shape.height },
+      { x: shape.x, y: shape.y + shape.height }
+    ];
+    const oppositeIndex = (vertexIndex + 2) % 4;
+    const anchor = corners[oppositeIndex];
+    shape.x = Math.min(anchor.x, x);
+    shape.y = Math.min(anchor.y, y);
+    shape.width = Math.abs(x - anchor.x);
+    shape.height = Math.abs(y - anchor.y);
   }
 }
 
-propUpdateLengthBtn.addEventListener('click', async () => {
-  if (!selectedShape || selectedShape.type !== 'line') return;
+// --- Selection handles (for the currently selected shape) ---
+function getHandlesForShape(shape) {
+  if (!shape) return [];
 
-  const newLength = parseFloat(propLength.value);
-  if (isNaN(newLength) || newLength <= 0) return;
+  if (shape.type === 'line') {
+    return [
+      { vertexIndex: 0, pos: { x: shape.x1, y: shape.y1 } },
+      { vertexIndex: 1, pos: { x: shape.x2, y: shape.y2 } }
+    ];
+  }
+  if (shape.type === 'rectangle') {
+    const corners = [
+      { x: shape.x, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y },
+      { x: shape.x + shape.width, y: shape.y + shape.height },
+      { x: shape.x, y: shape.y + shape.height }
+    ];
+    return corners.map((c, i) => ({ vertexIndex: i, pos: c }));
+  }
+  if (shape.type === 'circle') {
+    return [
+      { vertexIndex: 'center', pos: { x: shape.x, y: shape.y } },
+      { vertexIndex: 'radius', pos: { x: shape.x + shape.radius, y: shape.y } }
+    ];
+  }
+  return [];
+}
 
-  const result = await solveLineLength(
-    selectedShape.x1, selectedShape.y1,
-    selectedShape.x2, selectedShape.y2,
-    newLength
-  );
+function getHandleAt(screenX, screenY) {
+  if (!selectedShape || selectedShape.hidden) return null;
 
-  selectedShape.x2 = result.x;
-  selectedShape.y2 = result.y;
+  for (const h of getHandlesForShape(selectedShape)) {
+    const s = worldToScreen(h.pos.x, h.pos.y);
+    const d = Math.hypot(screenX - s.x, screenY - s.y);
+    if (d <= HANDLE_HIT_PIXELS) return h;
+  }
+  return null;
+}
 
-  updatePropertyPanel();
-  drawShapes();
-});
+// --- Property panel (shows fields relevant to the selected shape's type) ---
+function makeField(labelText, value) {
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.step = '0.1';
+  input.value = value.toFixed(1);
+  label.appendChild(input);
+  return { label, input };
+}
 
-propUpdatePointsBtn.addEventListener('click', () => {
-  if (!selectedShape || selectedShape.type !== 'line') return;
+function makeButton(text) {
+  const btn = document.createElement('button');
+  btn.className = 'tool-btn';
+  btn.textContent = text;
+  return btn;
+}
 
-  const x1 = parseFloat(propX1.value);
-  const y1 = parseFloat(propY1.value);
-  const x2 = parseFloat(propX2.value);
-  const y2 = parseFloat(propY2.value);
+function makeDivider() {
+  const div = document.createElement('div');
+  div.className = 'property-divider';
+  return div;
+}
 
-  if ([x1, y1, x2, y2].some(v => isNaN(v))) return;
+function updatePropertyPanel() {
+  propertyPanel.innerHTML = '';
 
-  selectedShape.x1 = x1;
-  selectedShape.y1 = y1;
-  selectedShape.x2 = x2;
-  selectedShape.y2 = y2;
+  if (!selectedShape || selectedShape.hidden) {
+    propertyPanel.classList.add('hidden');
+    return;
+  }
 
-  updatePropertyPanel();
-  drawShapes();
-});
+  propertyPanel.classList.remove('hidden');
+
+  const header = document.createElement('div');
+  header.className = 'property-panel-header';
+  header.textContent = selectedShape.name;
+  propertyPanel.appendChild(header);
+
+  if (selectedShape.type === 'line') {
+    const length = Math.hypot(selectedShape.x2 - selectedShape.x1, selectedShape.y2 - selectedShape.y1);
+    const lenField = makeField('Length (mm)', length);
+    propertyPanel.appendChild(lenField.label);
+
+    const lenBtn = makeButton('Update Length');
+    lenBtn.addEventListener('click', async () => {
+      const newLength = parseFloat(lenField.input.value);
+      if (isNaN(newLength) || newLength <= 0) return;
+      const result = await solveLineLength(selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2, newLength);
+      selectedShape.x2 = result.x;
+      selectedShape.y2 = result.y;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propertyPanel.appendChild(lenBtn);
+    propertyPanel.appendChild(makeDivider());
+
+    const x1 = makeField('Start X', selectedShape.x1);
+    const y1 = makeField('Start Y', selectedShape.y1);
+    const x2 = makeField('End X', selectedShape.x2);
+    const y2 = makeField('End Y', selectedShape.y2);
+    [x1, y1, x2, y2].forEach(f => propertyPanel.appendChild(f.label));
+
+    const ptsBtn = makeButton('Update Points');
+    ptsBtn.addEventListener('click', () => {
+      const vals = [x1, y1, x2, y2].map(f => parseFloat(f.input.value));
+      if (vals.some(v => isNaN(v))) return;
+      [selectedShape.x1, selectedShape.y1, selectedShape.x2, selectedShape.y2] = vals;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propertyPanel.appendChild(ptsBtn);
+
+  } else if (selectedShape.type === 'rectangle') {
+    const xF = makeField('X', selectedShape.x);
+    const yF = makeField('Y', selectedShape.y);
+    const wF = makeField('Width', selectedShape.width);
+    const hF = makeField('Height', selectedShape.height);
+    [xF, yF, wF, hF].forEach(f => propertyPanel.appendChild(f.label));
+
+    const btn = makeButton('Update Rectangle');
+    btn.addEventListener('click', () => {
+      const vals = [xF, yF, wF, hF].map(f => parseFloat(f.input.value));
+      if (vals.some(v => isNaN(v))) return;
+      [selectedShape.x, selectedShape.y, selectedShape.width, selectedShape.height] = vals;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propertyPanel.appendChild(btn);
+
+  } else if (selectedShape.type === 'circle') {
+    const xF = makeField('Center X', selectedShape.x);
+    const yF = makeField('Center Y', selectedShape.y);
+    const rF = makeField('Radius', selectedShape.radius);
+    [xF, yF, rF].forEach(f => propertyPanel.appendChild(f.label));
+
+    const btn = makeButton('Update Circle');
+    btn.addEventListener('click', () => {
+      const vals = [xF, yF, rF].map(f => parseFloat(f.input.value));
+      if (vals.some(v => isNaN(v))) return;
+      [selectedShape.x, selectedShape.y, selectedShape.radius] = vals;
+      updatePropertyPanel();
+      drawShapes();
+    });
+    propertyPanel.appendChild(btn);
+
+  } else if (selectedShape.type === 'dimension') {
+    const geo = computeDimensionGeometry(selectedShape);
+    const isEditable = selectedShape.entityA.kind === 'vertex' && selectedShape.entityB.kind === 'vertex';
+
+    const distField = makeField('Distance (mm)', geo ? geo.distance : 0);
+    distField.input.disabled = !isEditable;
+    propertyPanel.appendChild(distField.label);
+
+    if (isEditable) {
+      const btn = makeButton('Update Distance');
+      btn.addEventListener('click', async () => {
+        const newDist = parseFloat(distField.input.value);
+        if (isNaN(newDist) || newDist <= 0) return;
+
+        const pA = getVertexPosition(selectedShape.entityA.shapeId, selectedShape.entityA.vertexIndex);
+        const pB = getVertexPosition(selectedShape.entityB.shapeId, selectedShape.entityB.vertexIndex);
+        if (!pA || !pB) return;
+
+        const result = await solveLineLength(pA.x, pA.y, pB.x, pB.y, newDist);
+        moveVertex(selectedShape.entityB.shapeId, selectedShape.entityB.vertexIndex, result.x, result.y);
+
+        updatePropertyPanel();
+        drawShapes();
+      });
+      propertyPanel.appendChild(btn);
+    } else {
+      const note = document.createElement('div');
+      note.style.fontSize = '10px';
+      note.style.color = '#7d7f82';
+      note.style.lineHeight = '1.4';
+      note.textContent = 'Only point-to-point dimensions can be edited directly.';
+      propertyPanel.appendChild(note);
+    }
+  }
+}
 
 // --- Model tree panel ---
 function renderModelTree() {
@@ -259,19 +433,24 @@ function shapeArea(shape) {
   return Infinity;
 }
 
-// --- Entity system (edges/circles you can dimension against) ---
-function resolveEntity(shapeId, edgeIndex) {
-  const shape = getShapeById(shapeId);
+// --- Entity system (vertices + edges you can dimension against) ---
+function resolveEntity(ref) {
+  const shape = getShapeById(ref.shapeId);
   if (!shape || shape.hidden) return null;
 
-  if (edgeIndex === 'circle') {
-    return { kind: 'circle', cx: shape.x, cy: shape.y, radius: shape.radius };
+  if (ref.kind === 'vertex') {
+    const p = getVertexPosition(ref.shapeId, ref.vertexIndex);
+    if (!p) return null;
+    return { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
   }
 
+  // kind === 'edge'
+  if (ref.edgeIndex === 'circle') {
+    return { x1: shape.x, y1: shape.y, x2: shape.x, y2: shape.y };
+  }
   if (shape.type === 'line') {
-    return { kind: 'edge', x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+    return { x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
   }
-
   if (shape.type === 'rectangle') {
     const corners = [
       { x: shape.x, y: shape.y },
@@ -279,11 +458,10 @@ function resolveEntity(shapeId, edgeIndex) {
       { x: shape.x + shape.width, y: shape.y + shape.height },
       { x: shape.x, y: shape.y + shape.height }
     ];
-    const a = corners[edgeIndex];
-    const b = corners[(edgeIndex + 1) % 4];
-    return { kind: 'edge', x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    const a = corners[ref.edgeIndex];
+    const b = corners[(ref.edgeIndex + 1) % 4];
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
   }
-
   return null;
 }
 
@@ -291,36 +469,43 @@ function getAllEntityRefs() {
   const refs = [];
   for (const shape of shapes) {
     if (shape.hidden) continue;
+
     if (shape.type === 'line') {
-      refs.push({ shapeId: shape.id, edgeIndex: 0 });
+      refs.push({ shapeId: shape.id, kind: 'edge', edgeIndex: 0 });
+      refs.push({ shapeId: shape.id, kind: 'vertex', vertexIndex: 0 });
+      refs.push({ shapeId: shape.id, kind: 'vertex', vertexIndex: 1 });
     } else if (shape.type === 'rectangle') {
-      for (let i = 0; i < 4; i++) refs.push({ shapeId: shape.id, edgeIndex: i });
+      for (let i = 0; i < 4; i++) refs.push({ shapeId: shape.id, kind: 'edge', edgeIndex: i });
+      for (let i = 0; i < 4; i++) refs.push({ shapeId: shape.id, kind: 'vertex', vertexIndex: i });
     } else if (shape.type === 'circle') {
-      refs.push({ shapeId: shape.id, edgeIndex: 'circle' });
+      refs.push({ shapeId: shape.id, kind: 'edge', edgeIndex: 'circle' });
+      refs.push({ shapeId: shape.id, kind: 'vertex', vertexIndex: 'center' });
     }
   }
   return refs;
 }
 
+// Vertices are preferred over edges — point-to-point snapping takes priority,
+// falling back to nearest-point-on-edge only if no vertex is close enough.
 function getEntityAt(x, y) {
-  let best = null;
-  let bestDist = ENTITY_TOLERANCE;
+  let bestVertex = null, bestVertexDist = ENTITY_TOLERANCE;
+  let bestEdge = null, bestEdgeDist = ENTITY_TOLERANCE;
 
   for (const ref of getAllEntityRefs()) {
-    const r = resolveEntity(ref.shapeId, ref.edgeIndex);
+    const r = resolveEntity(ref);
     if (!r) continue;
 
-    const d = (r.kind === 'circle')
-      ? Math.abs(Math.hypot(x - r.cx, y - r.cy) - r.radius)
-      : distanceToSegment(x, y, r.x1, r.y1, r.x2, r.y2);
+    const isPoint = (r.x1 === r.x2 && r.y1 === r.y2);
+    const d = isPoint ? Math.hypot(x - r.x1, y - r.y1) : distanceToSegment(x, y, r.x1, r.y1, r.x2, r.y2);
 
-    if (d < bestDist) {
-      bestDist = d;
-      best = ref;
+    if (ref.kind === 'vertex') {
+      if (d < bestVertexDist) { bestVertexDist = d; bestVertex = ref; }
+    } else {
+      if (d < bestEdgeDist) { bestEdgeDist = d; bestEdge = ref; }
     }
   }
 
-  return best;
+  return bestVertex || bestEdge;
 }
 
 function getDimensionAt(x, y) {
@@ -379,14 +564,11 @@ function segmentMinDistance(segA, segB) {
 }
 
 function computeDimensionGeometry(dim) {
-  const A = resolveEntity(dim.entityA.shapeId, dim.entityA.edgeIndex);
-  const B = resolveEntity(dim.entityB.shapeId, dim.entityB.edgeIndex);
+  const A = resolveEntity(dim.entityA);
+  const B = resolveEntity(dim.entityB);
   if (!A || !B) return null;
 
-  const segA = A.kind === 'edge' ? A : { x1: A.cx, y1: A.cy, x2: A.cx, y2: A.cy };
-  const segB = B.kind === 'edge' ? B : { x1: B.cx, y1: B.cy, x2: B.cx, y2: B.cy };
-
-  const { p1, p2, distance } = segmentMinDistance(segA, segB);
+  const { p1, p2, distance } = segmentMinDistance(A, B);
 
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
@@ -458,24 +640,41 @@ function drawCrosshair() {
 }
 
 function drawEntityHighlight(ref, color) {
-  const resolved = resolveEntity(ref.shapeId, ref.edgeIndex);
+  const resolved = resolveEntity(ref);
   if (!resolved) return;
 
   ctx.setLineDash([]);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
 
-  if (resolved.kind === 'circle') {
-    const c = worldToScreen(resolved.cx, resolved.cy);
+  if (ref.kind === 'vertex') {
+    const p = worldToScreen(resolved.x1, resolved.y1);
+    ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(c.x, c.y, resolved.radius * SCALE, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+    ctx.fill();
   } else {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
     const a = worldToScreen(resolved.x1, resolved.y1);
     const b = worldToScreen(resolved.x2, resolved.y2);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+function drawHandles() {
+  if (activeTool === 'dimension') return;
+  if (!selectedShape || selectedShape.hidden) return;
+
+  for (const h of getHandlesForShape(selectedShape)) {
+    const s = worldToScreen(h.pos.x, h.pos.y);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#e8b04b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
   }
 }
@@ -568,6 +767,8 @@ function drawShapes() {
     if (hoverEntity) drawEntityHighlight(hoverEntity, '#6fc9e8');
     if (dimensionFirstEntity) drawEntityHighlight(dimensionFirstEntity, '#7fc97f');
   }
+
+  drawHandles();
 
   ctx.setLineDash([]);
   drawCrosshair();
@@ -667,10 +868,19 @@ canvas.addEventListener('mousedown', (e) => {
   isDrawing = false;
   isMoving = false;
   isMovingDimensionOffset = false;
+  isDraggingHandle = false;
+  draggingHandleInfo = null;
 
   const world = getWorldMouse(e);
   startX = world.x;
   startY = world.y;
+
+  const handle = getHandleAt(e.offsetX, e.offsetY);
+  if (handle) {
+    isDraggingHandle = true;
+    draggingHandleInfo = handle;
+    return;
+  }
 
   if (selectedShape) {
     const hit = getShapeAt(startX, startY);
@@ -700,6 +910,18 @@ canvas.addEventListener('mousemove', (e) => {
 
   const worldPos = screenToWorld(e.offsetX, e.offsetY);
   coordsLabel.textContent = `X: ${worldPos.x.toFixed(1)}  Y: ${worldPos.y.toFixed(1)}`;
+
+  if (isDraggingHandle && draggingHandleInfo) {
+    const world = getWorldMouse(e);
+    if (selectedShape.type === 'circle' && draggingHandleInfo.vertexIndex === 'radius') {
+      selectedShape.radius = Math.hypot(world.x - selectedShape.x, world.y - selectedShape.y);
+    } else {
+      moveVertex(selectedShape.id, draggingHandleInfo.vertexIndex, world.x, world.y);
+    }
+    updatePropertyPanel();
+    drawShapes();
+    return;
+  }
 
   if (isMovingDimensionOffset) {
     const geo = computeDimensionGeometry(selectedShape);
@@ -738,11 +960,11 @@ canvas.addEventListener('mousemove', (e) => {
       selectedShape.y1 += dy;
       selectedShape.x2 += dx;
       selectedShape.y2 += dy;
-      updatePropertyPanel();
     } else {
       selectedShape.x = currentX - moveOffsetX;
       selectedShape.y = currentY - moveOffsetY;
     }
+    updatePropertyPanel();
     drawShapes();
     return;
   }
@@ -813,8 +1035,12 @@ canvas.addEventListener('click', (e) => {
   if (!dimensionFirstEntity) {
     dimensionFirstEntity = entity;
   } else {
-    const isSameEntity = entity.shapeId === dimensionFirstEntity.shapeId && entity.edgeIndex === dimensionFirstEntity.edgeIndex;
-    if (!isSameEntity) {
+    const isSame = entity.shapeId === dimensionFirstEntity.shapeId
+      && entity.kind === dimensionFirstEntity.kind
+      && entity.edgeIndex === dimensionFirstEntity.edgeIndex
+      && entity.vertexIndex === dimensionFirstEntity.vertexIndex;
+
+    if (!isSame) {
       createShape({
         type: 'dimension',
         entityA: dimensionFirstEntity,
@@ -836,6 +1062,13 @@ document.addEventListener('mouseup', (e) => {
 
   if (!mouseIsDown) return;
   mouseIsDown = false;
+
+  if (isDraggingHandle) {
+    isDraggingHandle = false;
+    draggingHandleInfo = null;
+    drawShapes();
+    return;
+  }
 
   if (isMovingDimensionOffset) {
     isMovingDimensionOffset = false;
