@@ -3298,6 +3298,7 @@ var require_script = __commonJS({
       e.preventDefault();
       const worldBefore = screenToWorld(e.offsetX, e.offsetY);
       canvas.addEventListener("dblclick", async (e2) => {
+        console.log("double click fired");
         if (activeTool === "dimension") return;
         const world = screenToWorld(e2.offsetX, e2.offsetY);
         const hit = getShapeAt(world.x, world.y);
